@@ -1,0 +1,48 @@
+name: Build MundoIA APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar Android
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar SDK
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Extraer proyecto
+        run: |
+          mkdir proyecto
+          ZIP=$(find . -maxdepth 1 -iname "*.zip" | head -n 1)
+          test -n "$ZIP"
+          unzip -q "$ZIP" -d proyecto
+          DIR=$(dirname "$(find proyecto -name settings.gradle.kts -o -name settings.gradle | head -n 1)")
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
+      - name: Compilar APK
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Construir
+        run: cd "$PROJECT_DIR" && gradle --no-daemon :app:assembleDebug
+
+      - name: Guardar APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MundoIA-APK
+          path: proyecto/**/app/build/outputs/apk/debug/app-debug.apk
