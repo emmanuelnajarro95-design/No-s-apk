@@ -1,5 +1,5 @@
 
-name: Construir APK
+name: Construir APK JE2BE
 
 on:
   workflow_dispatch:
@@ -37,20 +37,52 @@ jobs:
         with:
           gradle-version: '8.11'
 
+      - name: Extraer proyecto JE2BE
+        shell: bash
+        run: |
+          set -e
+
+          ZIP_FILE="je2be-android-project.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: No se encontró el archivo $ZIP_FILE"
+            find . -maxdepth 3 -type f
+            exit 1
+          fi
+
+          mkdir -p extracted-project
+          unzip -q "$ZIP_FILE" -d extracted-project
+
+          echo "Proyecto extraído correctamente."
+          find extracted-project -maxdepth 4 -type f | sort | head -200
+
+      - name: Comprobar proyecto Gradle
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS_FILE=$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: No se encontró settings.gradle dentro del ZIP."
+            echo "Contenido extraído:"
+            find extracted-project -maxdepth 5 -type f | sort
+            exit 1
+          fi
+
+          echo "Proyecto encontrado: $SETTINGS_FILE"
+
       - name: Compilar APK
         shell: bash
         run: |
           set -e
 
-          PROJECT_DIR=$(find . -name settings.gradle -o -name settings.gradle.kts | head -n 1)
+          SETTINGS_FILE=$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "ERROR: No se encontró settings.gradle."
-            exit 1
-          fi
-
-          PROJECT_DIR=$(dirname "$PROJECT_DIR")
+          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
           cd "$PROJECT_DIR"
+
+          echo "Directorio del proyecto: $PROJECT_DIR"
 
           if [ -f "./gradlew" ]; then
             chmod +x ./gradlew
@@ -59,11 +91,26 @@ jobs:
             gradle assembleDebug
           fi
 
+      - name: Verificar APK
+        shell: bash
+        run: |
+          set -e
+
+          APK=$(find extracted-project -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)
+
+          if [ -z "$APK" ]; then
+            echo "ERROR: La compilación terminó sin generar un APK."
+            exit 1
+          fi
+
+          echo "APK generado: $APK"
+
       - name: Guardar APK
         uses: actions/upload-artifact@v4
-        if: success()
         with:
           name: JE2BE-Android-APK
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: extracted-project/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
+          
           
