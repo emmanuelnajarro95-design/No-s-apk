@@ -42,64 +42,125 @@ jobs:
         run: |
           set -e
 
-          ZIP_FILE="je2be-android-project.zip"
-
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: No se encontró el archivo $ZIP_FILE"
-            find . -maxdepth 3 -type f
+          if [ ! -f "je2be-android-project.zip" ]; then
+            echo "ERROR: No se encontró el ZIP del proyecto."
             exit 1
           fi
 
           mkdir -p extracted-project
-          unzip -q "$ZIP_FILE" -d extracted-project
+          unzip -q je2be-android-project.zip -d extracted-project
 
-          echo "Proyecto extraído correctamente."
-          find extracted-project -maxdepth 4 -type f | sort | head -200
-
-      - name: Comprobar proyecto Gradle
+      - name: Encontrar proyecto Android
         shell: bash
         run: |
           set -e
 
-          SETTINGS_FILE=$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+          SETTINGS=$(find extracted-project -type f \( \
+            -name settings.gradle -o \
+            -name settings.gradle.kts \
+          \) -print -quit)
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: No se encontró settings.gradle dentro del ZIP."
-            echo "Contenido extraído:"
-            find extracted-project -maxdepth 5 -type f | sort
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: No se encontró settings.gradle."
             exit 1
           fi
 
-          echo "Proyecto encontrado: $SETTINGS_FILE"
+          echo "PROJECT_DIR=$(dirname "$SETTINGS")" >> "$GITHUB_ENV"
 
-      - name: Compilar APK
+      - name: Preparar comando Gradle
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+          else
+            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+          fi
+
+      - name: Primera compilación y descarga de dependencias
+        shell: bash
+        run: |
+          cd "$PROJECT_DIR"
+
+          set +e
+          $GRADLE_CMD assembleDebug
+          RESULT=$?
+          set -e
+
+          echo "Primera compilación finalizada con código: $RESULT"
+
+      - name: Corregir compatibilidad gzip Android
         shell: bash
         run: |
           set -e
 
-          SETTINGS_FILE=$(find extracted-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print -quit)
+          python3 - <<'PY'
+          from pathlib import Path
 
-          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          root = Path("extracted-project")
+          files = list(root.rglob("gz-file-input-stream.hpp"))
+
+          if not files:
+              raise SystemExit(
+                  "ERROR: No se encontró gz-file-input-stream.hpp"
+              )
+
+          fixed = False
+
+          for file in files:
+              source = file.read_text()
+
+              old = "gzfread(buffer, 1, size, fFile)"
+
+              new = """gzread(fFile, buffer, static_cast<unsigned int>(size))"""
+
+              if old in source:
+                  source = source.replace(
+                      "size_t read = " + old + ";",
+                      """int gzReadResult = gzread(
+              fFile,
+              buffer,
+              static_cast<unsigned int>(size)
+          );
+          size_t read = gzReadResult > 0
+              ? static_cast<size_t>(gzReadResult)
+              : 0;"""
+                  )
+
+                  file.write_text(source)
+                  print("CORREGIDO:", file)
+                  fixed = True
+
+              elif "gzread(fFile" in source:
+                  print("El archivo ya utiliza gzread:", file)
+                  fixed = True
+
+          if not fixed:
+              raise SystemExit(
+                  "ERROR: No se encontró la llamada esperada a gzfread."
+              )
+          PY
+
+      - name: Compilar APK corregido
+        shell: bash
+        run: |
+          set -e
           cd "$PROJECT_DIR"
-
-          echo "Directorio del proyecto: $PROJECT_DIR"
-
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
-            ./gradlew assembleDebug
-          else
-            gradle assembleDebug
-          fi
+          $GRADLE_CMD assembleDebug
 
       - name: Verificar APK
         shell: bash
         run: |
           set -e
 
-          APK=$(find extracted-project -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)
+          APK=$(find extracted-project -type f \
+            -path '*/build/outputs/apk/debug/*.apk' \
+            -print -quit)
 
           if [ -z "$APK" ]; then
-            echo "ERROR: La compilación terminó sin generar un APK."
+            echo "ERROR: No se generó ningún APK."
             exit 1
           fi
 
@@ -112,5 +173,4 @@ jobs:
           path: extracted-project/**/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 7
-          
           
